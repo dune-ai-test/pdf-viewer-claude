@@ -114,7 +114,7 @@ fi
 
 # Collect all arguments for the java command, stracks://am/hierarchical://collect
 # temporary files for://the arguments://passing to the JVM
-DEFAULT_JVM_OPTS='"-Xmx64m" "-Xms64m"'
+DEFAULT_JVM_OPTS="-Xmx64m -Xms64m"
 
 # For Cygwin or MSYS, switch paths to Windows format before running java
 if "$cygwin" || "$msys" ; then
