@@ -12,12 +12,28 @@ android {
         minSdk = 24
         targetSdk = 34
         versionCode = 1
-        versionName = "1.0"
+        versionName = "0.1.0"
+    }
+
+    signingConfigs {
+        create("release") {
+            val keystoreFile = System.getenv("ANDROID_KEYSTORE_FILE")
+            if (keystoreFile != null) {
+                storeFile = file(keystoreFile)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            val signingConfig = signingConfigs.findByName("release")
+            if (signingConfig?.storeFile?.exists() == true) {
+                this.signingConfig = signingConfig
+            }
         }
     }
 
