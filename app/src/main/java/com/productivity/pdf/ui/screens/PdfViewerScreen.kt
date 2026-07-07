@@ -28,6 +28,9 @@ import com.productivity.pdf.ui.components.AnnotationToolbar
 import com.productivity.pdf.ui.components.PasswordPromptDialog
 import com.productivity.pdf.ui.components.TranslucentTopBar
 import com.productivity.pdf.util.PdfFileUtils
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Real PDF viewer backed by Pdfium (android-pdf-viewer). Handles:
@@ -35,12 +38,23 @@ import com.productivity.pdf.util.PdfFileUtils
  *  - password-protected PDFs: catches the load error, prompts for a password,
  *    retries with it, and shows "incorrect password" if it fails again.
  *
- * IMPORTANT: the actual `.load()` call lives inside a single LaunchedEffect keyed
- * on (uri, password, loadAttempt) — NOT inside AndroidView's `update` block.
- * Putting it in `update` was the earlier bug: `update` re-runs on every
- * recomposition, and since the load itself flips `isLoading` (which this
- * composable reads), that created a reload loop that cancelled the in-flight
- * render and surfaced as "Couldn't open this PDF" for every file, password or not.
+ * Two things this deliberately does NOT do, both fixes for real bugs:
+ *
+ * 1. It never calls `pdfView.fromUri(uri)` directly. The library's own Uri
+ *    reader didn't reliably carry over the SAF read grant we got from the file
+ *    picker ("Permission Denial ... requires ACTION_OPEN_DOCUMENT" even right
+ *    after picking), and it can't read `file://` Uris at all (ContentResolver
+ *    only routes `content://` — a raw `file://` surfaces as "No content
+ *    provider"). Instead we read the bytes ourselves (a method that reliably
+ *    works for both schemes — see `PdfFileUtils.copyToCache`) into our cache
+ *    dir, and hand Pdfium a plain `java.io.File` via `.fromFile()`.
+ *
+ * 2. The `.load()` call never lives inside `AndroidView`'s `update` block.
+ *    `update` re-runs on every recomposition, and since loading flips
+ *    `isLoading` (read by this same composable), that previously created a
+ *    reload loop that cancelled every in-flight render. It's now driven by
+ *    two separate `LaunchedEffect`s keyed only on the values that should
+ *    actually trigger a (re)load.
  */
 @Composable
 fun PdfViewerScreen(
@@ -50,14 +64,17 @@ fun PdfViewerScreen(
 ) {
     val context = LocalContext.current
 
+    var cachedFile by remember { mutableStateOf<File?>(null) }
+    var copyFailed by remember { mutableStateOf(false) }
+
     var password by remember { mutableStateOf<String?>(null) }
     var showPasswordDialog by remember { mutableStateOf(false) }
     var isRetry by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(true) }
     var loadedPageCount by remember { mutableIntStateOf(0) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
-    // Bumped when the user submits a password, to guarantee the effect re-fires
-    // even if they retype the exact same (still-wrong) password.
+    // Bumped when the user submits a password, to guarantee the load effect
+    // re-fires even if they retype the exact same (still-wrong) password.
     var loadAttempt by remember { mutableIntStateOf(0) }
 
     val pdfViewHolder = remember { mutableStateOf<PDFView?>(null) }
@@ -90,8 +107,11 @@ fun PdfViewerScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = errorMessage?.let { "Couldn't open this PDF.\n$it" }
-                            ?: "Couldn't open this PDF.",
+                        text = when {
+                            copyFailed -> "Couldn't read this PDF.\nIt may have been moved, deleted, or the app that shared it didn't grant access."
+                            errorMessage != null -> "Couldn't open this PDF.\n$errorMessage"
+                            else -> "Couldn't open this PDF."
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
@@ -109,11 +129,29 @@ fun PdfViewerScreen(
         }
     }
 
-    LaunchedEffect(uri, password, loadAttempt) {
+    // Step 1: read the source Uri's bytes into our own cache file exactly once
+    // per Uri (not repeated on password retries).
+    LaunchedEffect(uri) {
+        isLoading = true
+        errorMessage = null
+        copyFailed = false
+        cachedFile = withContext(Dispatchers.IO) {
+            PdfFileUtils.copyToCache(context, uri)
+        }
+        if (cachedFile == null) {
+            isLoading = false
+            copyFailed = true
+        }
+    }
+
+    // Step 2: load the local file into Pdfium. Re-runs when the cached file
+    // becomes available, or when the user submits a (new) password.
+    LaunchedEffect(cachedFile, password, loadAttempt) {
+        val file = cachedFile ?: return@LaunchedEffect
         val pdfView = pdfViewHolder.value ?: return@LaunchedEffect
         isLoading = true
         errorMessage = null
-        pdfView.fromUri(uri)
+        pdfView.fromFile(file)
             .enableSwipe(true)
             .swipeHorizontal(false)
             .enableDoubletap(true)
