@@ -6,7 +6,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.Highlight
 import androidx.compose.material.icons.filled.TextFields
@@ -33,7 +33,7 @@ private val tools = listOf(
     AnnotationTool(Icons.Filled.Highlight, "Highlight"),
     AnnotationTool(Icons.Filled.Draw, "Draw"),
     AnnotationTool(Icons.Filled.TextFields, "Text"),
-    AnnotationTool(Icons.Filled.Chat, "Comment")
+    AnnotationTool(Icons.AutoMirrored.Filled.Chat, "Comment")
 )
 
 /**

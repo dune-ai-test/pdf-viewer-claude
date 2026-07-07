@@ -2,61 +2,59 @@ package com.productivity.pdf.navigation
 
 import android.net.Uri
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import com.productivity.pdf.data.SampleData
-import com.productivity.pdf.ui.screens.DocumentScreen
 import com.productivity.pdf.ui.screens.LibraryScreen
 import com.productivity.pdf.ui.screens.PdfViewerScreen
+import com.productivity.pdf.util.PdfFileUtils
 
 private const val ROUTE_LIBRARY = "library"
-private const val ROUTE_DOCUMENT = "document/{docId}"
 private const val ROUTE_VIEWER = "viewer/{encodedUri}"
 
-@Composable
-fun AppNavGraph() {
-    val navController = rememberNavController()
+private fun viewerRoute(uri: Uri) = "viewer/${Uri.encode(uri.toString())}"
 
-    NavHost(navController = navController, startDestination = ROUTE_LIBRARY) {
+/**
+ * @param initialUri set when the app was launched via "Open with" / a VIEW
+ * intent on a .pdf file — in that case we skip straight to the viewer instead
+ * of the (now-empty) Library screen.
+ * @param onFinish called instead of popping the back stack when there's nowhere
+ * left to go back to (i.e. we were launched directly into the viewer).
+ */
+@Composable
+fun AppNavGraph(
+    initialUri: Uri? = null,
+    onFinish: () -> Unit = {}
+) {
+    val navController = rememberNavController()
+    val startDestination = initialUri?.let { viewerRoute(it) } ?: ROUTE_LIBRARY
+
+    NavHost(navController = navController, startDestination = startDestination) {
         composable(ROUTE_LIBRARY) {
             LibraryScreen(
-                onOpenDocument = { doc ->
-                    navController.navigate("document/${doc.id}")
-                },
-                onOpenRealPdf = { uri ->
-                    val encoded = Uri.encode(uri.toString())
-                    navController.navigate("viewer/$encoded")
-                }
-            )
-        }
-        composable(
-            route = ROUTE_DOCUMENT,
-            arguments = listOf(navArgument("docId") { type = NavType.IntType })
-        ) { backStackEntry ->
-            val docId = backStackEntry.arguments?.getInt("docId") ?: -1
-            val document = SampleData.documents.firstOrNull { it.id == docId }
-                ?: SampleData.documents.first()
-
-            DocumentScreen(
-                document = document,
-                onBack = { navController.popBackStack() }
+                onOpenRealPdf = { uri -> navController.navigate(viewerRoute(uri)) }
             )
         }
         composable(
             route = ROUTE_VIEWER,
             arguments = listOf(navArgument("encodedUri") { type = NavType.StringType })
         ) { backStackEntry ->
+            val context = LocalContext.current
             val encodedUri = backStackEntry.arguments?.getString("encodedUri").orEmpty()
             val uri = Uri.parse(Uri.decode(encodedUri))
-            val fileName = uri.lastPathSegment?.substringAfterLast('/') ?: "Document"
+            val fileName = PdfFileUtils.queryDisplayName(context, uri)
 
             PdfViewerScreen(
                 uri = uri,
                 fileName = fileName,
-                onBack = { navController.popBackStack() }
+                onBack = {
+                    if (!navController.popBackStack()) {
+                        onFinish()
+                    }
+                }
             )
         }
     }
