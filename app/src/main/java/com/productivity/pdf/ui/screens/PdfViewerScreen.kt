@@ -4,14 +4,15 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -39,37 +40,30 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Real PDF viewer backed by Pdfium (android-pdf-viewer). Handles:
- *  - normal PDFs: opens immediately
- *  - password-protected PDFs: catches the load error, prompts for a password,
- *    retries with it, and shows "incorrect password" if it fails again.
- *  - legacy `file://` sources on Android ≤9 (API 28): requests
- *    READ_EXTERNAL_STORAGE at runtime before attempting to read (declaring it
- *    in the manifest alone never triggers the OS prompt — that only works for
- *    "normal" permissions, not dangerous ones like storage).
+ * Real PDF viewer backed by Pdfium (android-pdf-viewer).
  *
- * Two other things this deliberately does NOT do, both fixes for real bugs:
+ * UI behavior: immersive by default — only the page(s) are shown. Tapping
+ * anywhere on a page toggles the top title bar and the bottom annotation
+ * toolbar back on/off (like most PDF/photo viewers). Hardware/gesture back
+ * always works via `BackHandler`, regardless of whether the bars are showing.
  *
- * 1. It never calls `pdfView.fromUri(uri)` directly. The library's own Uri
- *    reader didn't reliably carry over the SAF read grant we got from the file
- *    picker ("Permission Denial ... requires ACTION_OPEN_DOCUMENT" even right
- *    after picking), and it can't read `file://` Uris at all (ContentResolver
- *    only routes `content://` — a raw `file://` surfaces as "No content
- *    provider"). Instead we read the bytes ourselves into our cache dir (see
- *    `PdfFileUtils.copyToCache`), and hand Pdfium a plain `java.io.File` via
- *    `.fromFile()`.
- *
- * 2. The `.load()` call never lives inside `AndroidView`'s `update` block —
- *    it's driven by `LaunchedEffect`s keyed only on the values that should
- *    actually trigger a (re)load, avoiding an earlier reload-loop bug.
+ * @param addToRecents true only when this file was opened via the Library's
+ * own "+" button. Files opened via "Open with" from another app are viewed
+ * normally but deliberately NOT added to Recents.
  */
 @Composable
 fun PdfViewerScreen(
     uri: Uri,
     fileName: String,
+    addToRecents: Boolean,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+
+    BackHandler(onBack = onBack)
+
+    // Immersive chrome toggle — starts hidden, tapping the page flips it.
+    var chromeVisible by remember { mutableStateOf(false) }
 
     // Only file:// sources on API <= 28 (Android 9 and below) need the legacy
     // runtime permission at all — content:// (SAF / most "Open with" senders)
@@ -109,48 +103,53 @@ fun PdfViewerScreen(
 
     val pdfViewHolder = remember { mutableStateOf<PDFView?>(null) }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        topBar = { TranslucentTopBar(title = fileName, onBack = onBack) }
-    ) { padding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    PDFView(ctx, null).also { pdfViewHolder.value = it }
-                }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+    ) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                PDFView(ctx, null).also { pdfViewHolder.value = it }
+            }
+        )
+
+        if (isLoading && !showPasswordDialog) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+            }
+        }
+
+        if (!isLoading && loadedPageCount == 0 && !showPasswordDialog) {
+            Box(
+                modifier = Modifier.fillMaxSize().padding(32.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = when {
+                        permissionDenied ->
+                            "Storage permission is needed to open this file.\nGrant it in Settings > Apps > PDF Productivity > Permissions, then try again."
+                        copyFailed ->
+                            "Couldn't read this PDF.\nIt may have been moved, deleted, or the app that shared it didn't grant access."
+                        errorMessage != null -> "Couldn't open this PDF.\n$errorMessage"
+                        else -> "Couldn't open this PDF."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+
+        // Immersive overlay chrome — only drawn (and only takes up space) when
+        // toggled on, floating over the full-bleed page content underneath.
+        if (chromeVisible) {
+            TranslucentTopBar(
+                title = fileName,
+                onBack = onBack,
+                modifier = Modifier.align(Alignment.TopCenter)
             )
-
-            if (isLoading && !showPasswordDialog) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                }
-            }
-
-            if (!isLoading && loadedPageCount == 0 && !showPasswordDialog) {
-                Box(
-                    modifier = Modifier.fillMaxSize().padding(32.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = when {
-                            permissionDenied ->
-                                "Storage permission is needed to open this file.\nGrant it in Settings > Apps > PDF Productivity > Permissions, then try again."
-                            copyFailed ->
-                                "Couldn't read this PDF.\nIt may have been moved, deleted, or the app that shared it didn't grant access."
-                            errorMessage != null -> "Couldn't open this PDF.\n$errorMessage"
-                            else -> "Couldn't open this PDF."
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
-                }
-            }
 
             if (!isLoading && loadedPageCount > 0) {
                 AnnotationToolbar(
@@ -199,18 +198,24 @@ fun PdfViewerScreen(
             .defaultPage(0)
             .password(password)
             .spacing(8)
+            .onTap {
+                chromeVisible = !chromeVisible
+                true
+            }
             .onLoad { pageCount ->
                 isLoading = false
                 loadedPageCount = pageCount
                 showPasswordDialog = false
-                RecentPdfsStore.addOrBumpToTop(
-                    RecentPdf(
-                        uri = uri,
-                        name = fileName,
-                        sizeLabel = PdfFileUtils.querySizeLabel(context, uri),
-                        openedAt = "Just now"
+                if (addToRecents) {
+                    RecentPdfsStore.addOrBumpToTop(
+                        RecentPdf(
+                            uri = uri,
+                            name = fileName,
+                            sizeLabel = PdfFileUtils.querySizeLabel(context, uri),
+                            openedAt = "Just now"
+                        )
                     )
-                )
+                }
             }
             .onError { throwable ->
                 isLoading = false
@@ -220,6 +225,9 @@ fun PdfViewerScreen(
                 if (isPasswordError) {
                     isRetry = password != null
                     showPasswordDialog = true
+                    // Show the bars while the password dialog is up so the
+                    // screen doesn't look stuck on a blank page underneath it.
+                    chromeVisible = true
                 } else {
                     errorMessage = throwable.message
                 }

@@ -20,7 +20,8 @@ private const val ROUTE_VIEWER = "viewer/{uriId}"
 /**
  * @param initialUri set when the app was launched via "Open with" / a VIEW
  * intent on a .pdf file — in that case we skip straight to the viewer instead
- * of the Library screen.
+ * of the Library screen, and (per design) this file is NOT added to Recents:
+ * only PDFs opened via the Library's own "+" button count as "recent".
  * @param onFinish called instead of popping the back stack when there's nowhere
  * left to go back to (i.e. we were launched directly into the viewer).
  */
@@ -30,13 +31,17 @@ fun AppNavGraph(
     onFinish: () -> Unit = {}
 ) {
     val navController = rememberNavController()
-    val startDestination = initialUri?.let { "viewer/${UriRegistry.register(it)}" } ?: ROUTE_LIBRARY
+    val startDestination = initialUri
+        ?.let { "viewer/${UriRegistry.register(it, addToRecents = false)}" }
+        ?: ROUTE_LIBRARY
 
     NavHost(navController = navController, startDestination = startDestination) {
         composable(ROUTE_LIBRARY) {
             LibraryScreen(
                 onOpenRealPdf = { uri ->
-                    val id = UriRegistry.register(uri)
+                    // Only this path (the Library's + button) marks the file
+                    // as addToRecents = true.
+                    val id = UriRegistry.register(uri, addToRecents = true)
                     navController.navigate("viewer/$id")
                 }
             )
@@ -46,19 +51,20 @@ fun AppNavGraph(
             arguments = listOf(navArgument("uriId") { type = NavType.IntType })
         ) { backStackEntry ->
             val uriId = backStackEntry.arguments?.getInt("uriId") ?: -1
-            val uri = UriRegistry.get(uriId)
+            val registered = UriRegistry.get(uriId)
 
-            if (uri == null) {
+            if (registered == null) {
                 // Only reachable if the process died and lost the in-memory
                 // registry while this screen was still on the back stack.
                 LaunchedEffect(Unit) { onFinish() }
             } else {
                 val context = LocalContext.current
-                val fileName = PdfFileUtils.queryDisplayName(context, uri)
+                val fileName = PdfFileUtils.queryDisplayName(context, registered.uri)
 
                 PdfViewerScreen(
-                    uri = uri,
+                    uri = registered.uri,
                     fileName = fileName,
+                    addToRecents = registered.addToRecents,
                     onBack = {
                         if (!navController.popBackStack()) {
                             onFinish()
