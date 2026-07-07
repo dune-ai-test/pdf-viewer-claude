@@ -11,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -24,13 +25,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.github.barteksc.pdfviewer.PDFView
-import com.github.barteksc.pdfviewer.scroll.DefaultScrollHandle
+import com.productivity.pdf.data.PdfSettingsStore
 import com.productivity.pdf.data.RecentPdfsStore
 import com.productivity.pdf.model.RecentPdf
 import com.productivity.pdf.ui.components.AnnotationToolbar
@@ -49,10 +51,13 @@ import kotlinx.coroutines.withContext
  * toolbar back on/off (like most PDF/photo viewers). Hardware/gesture back
  * always works via `BackHandler`, regardless of whether the bars are showing.
  * Pinch-to-zoom is free between 0.5x and 6x (not clamped to the initial
- * fit-width scale), and a "current/total" page scrubber appears on the right
- * edge while scrolling. The PDF is copied to a disk cache file to open it
- * (see `PdfFileUtils.copyToCache`), and that file is deleted automatically
- * the moment this screen closes — so cache usage never grows unbounded.
+ * fit-width scale). A slim "current/total" page pill sits on the right edge
+ * (a custom, narrow indicator — not the library's much wider default scroll
+ * handle). Page background color and night mode come from `PdfSettingsStore`
+ * (set on the Settings screen, persisted across restarts). The PDF is copied
+ * to a disk cache file to open it (see `PdfFileUtils.copyToCache`), and that
+ * file is deleted automatically the moment this screen closes — so cache
+ * usage never grows unbounded.
  *
  * @param addToRecents true only when this file was opened via the Library's
  * own "+" button. Files opened via "Open with" from another app are viewed
@@ -103,6 +108,7 @@ fun PdfViewerScreen(
     var isRetry by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(true) }
     var loadedPageCount by remember { mutableIntStateOf(0) }
+    var currentPageIndex by remember { mutableIntStateOf(0) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     // Bumped when the user submits a password, to guarantee the load effect
     // re-fires even if they retype the exact same (still-wrong) password.
@@ -136,10 +142,18 @@ fun PdfViewerScreen(
                     view.minZoom = 0.5f
                     view.midZoom = 2.5f
                     view.maxZoom = 6f
+                    view.setBackgroundColor(PdfSettingsStore.backgroundColor)
                     pdfViewHolder.value = view
                 }
             }
         )
+
+        // Re-applies instantly if the background color is changed on the
+        // Settings screen while this PDF is still open (e.g. via the back
+        // stack), without needing to reload the document.
+        LaunchedEffect(PdfSettingsStore.backgroundColor) {
+            pdfViewHolder.value?.setBackgroundColor(PdfSettingsStore.backgroundColor)
+        }
 
         if (isLoading && !showPasswordDialog) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -185,6 +199,26 @@ fun PdfViewerScreen(
                 )
             }
         }
+
+        // Slim "current/total" page pill, e.g. "3/9" — narrow by design
+        // (just the text, small padding) unlike the library's own much wider
+        // default scroll handle. Shown whenever a document is loaded.
+        if (!isLoading && loadedPageCount > 0) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 8.dp)
+                    .clip(RoundedCornerShape(percent = 50))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f))
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+            ) {
+                Text(
+                    text = "${currentPageIndex + 1}/$loadedPageCount",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 
     // Step 1: for legacy file:// sources, make sure we actually have the
@@ -211,12 +245,16 @@ fun PdfViewerScreen(
     }
 
     // Step 3: load the local file into Pdfium. Re-runs when the cached file
-    // becomes available, or when the user submits a (new) password.
-    LaunchedEffect(cachedFile, password, loadAttempt) {
+    // becomes available, when the user submits a (new) password, or when the
+    // night-mode setting changes (background color updates live without a
+    // reload — see the separate LaunchedEffect above — but night mode is a
+    // load-time-only option in this library, so it needs a fresh load).
+    LaunchedEffect(cachedFile, password, loadAttempt, PdfSettingsStore.nightMode) {
         val file = cachedFile ?: return@LaunchedEffect
         val pdfView = pdfViewHolder.value ?: return@LaunchedEffect
         isLoading = true
         errorMessage = null
+        val nightMode = PdfSettingsStore.nightMode
         pdfView.fromFile(file)
             .enableSwipe(true)
             .swipeHorizontal(false)
@@ -224,10 +262,8 @@ fun PdfViewerScreen(
             .defaultPage(0)
             .password(password)
             .spacing(8)
-            // The standard "current page / total pages" indicator + drag
-            // scrubber shown on the right edge while scrolling — the same
-            // control most PDF readers (Drive, Adobe, etc.) use.
-            .scrollHandle(DefaultScrollHandle(context))
+            .nightMode(nightMode)
+            .onPageChange { page, _ -> currentPageIndex = page }
             .onTap {
                 chromeVisible = !chromeVisible
                 true

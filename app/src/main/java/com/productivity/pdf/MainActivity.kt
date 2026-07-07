@@ -12,6 +12,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import com.productivity.pdf.navigation.AppNavGraph
+import com.productivity.pdf.data.PdfSettingsStore
 import com.productivity.pdf.ui.theme.PdfProductivityTheme
 import com.productivity.pdf.util.PdfFileUtils
 import kotlinx.coroutines.Dispatchers
@@ -46,6 +47,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         pendingUri.value = extractPdfUri(intent)
+
+        // Loads the saved page-background-color / night-mode choices (a
+        // couple of SharedPreferences keys — negligible I/O) before any
+        // composable reads PdfSettingsStore, so the correct saved value shows
+        // immediately instead of a default flash.
+        PdfSettingsStore.init(applicationContext)
 
         // Safety net: normal open/close cycles delete their own cache file
         // (see PdfViewerScreen's DisposableEffect); this only catches the case

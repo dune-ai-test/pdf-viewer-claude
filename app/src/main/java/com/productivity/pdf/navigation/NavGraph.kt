@@ -17,9 +17,11 @@ import androidx.navigation.navArgument
 import com.productivity.pdf.data.UriRegistry
 import com.productivity.pdf.ui.screens.LibraryScreen
 import com.productivity.pdf.ui.screens.PdfViewerScreen
+import com.productivity.pdf.ui.screens.SettingsScreen
 import com.productivity.pdf.util.PdfFileUtils
 
 private const val ROUTE_LIBRARY = "library"
+private const val ROUTE_SETTINGS = "settings"
 private const val ROUTE_VIEWER = "viewer/{uriId}"
 
 private fun viewerRoute(uriId: Int) = "viewer/$uriId"
@@ -50,8 +52,12 @@ fun AppNavGraph(
                     // as addToRecents = true.
                     val id = UriRegistry.register(uri, addToRecents = true)
                     navController.navigate(viewerRoute(id))
-                }
+                },
+                onOpenSettings = { navController.navigate(ROUTE_SETTINGS) }
             )
+        }
+        composable(ROUTE_SETTINGS) {
+            SettingsScreen(onBack = { navController.popBackStack() })
         }
         composable(
             route = ROUTE_VIEWER,
