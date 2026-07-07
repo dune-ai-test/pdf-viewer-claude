@@ -9,28 +9,40 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import com.productivity.pdf.navigation.AppNavGraph
 import com.productivity.pdf.ui.theme.PdfProductivityTheme
 
 class MainActivity : ComponentActivity() {
 
+    // Held here (not just inside the composable) so `onNewIntent` can push a
+    // new value into an already-running Compose tree — see the class doc below
+    // for why that distinction matters.
+    private val pendingUri = mutableStateOf<Uri?>(null)
+
+    /**
+     * IMPORTANT: `setContent` is called exactly once, in `onCreate`.
+     *
+     * The earlier version called `setContent` again from `onNewIntent` to
+     * "jump to the new file". That doesn't do what it looks like it does:
+     * `ComponentActivity.setContent` reuses the existing `ComposeView` and its
+     * *existing Composition* if one is already attached — it does not tear
+     * down and rebuild the Compose tree. That meant `rememberNavController()`
+     * inside `AppNavGraph` kept its old instance and old back stack every
+     * time, so a new "Open with" launch while the app was merely backgrounded
+     * (not process-killed) could silently keep showing the previous PDF, or
+     * race with its still-cached file, surfacing as "Couldn't read this PDF".
+     *
+     * Fix: keep a single long-lived Composition. `onNewIntent` only updates
+     * `pendingUri` (a `MutableState`), and `AppNavGraph` reacts to that change
+     * itself with an explicit, back-stack-clearing `navController.navigate(...)`.
+     */
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        renderContent(extractPdfUri(intent))
-    }
+        pendingUri.value = extractPdfUri(intent)
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        // Simplest reliable way to make a fresh "Open with" launch (while the app
-        // is already running) jump straight into the new file: rebuild the whole
-        // Compose tree from the new intent's Uri.
-        renderContent(extractPdfUri(intent))
-    }
-
-    private fun renderContent(initialUri: Uri?) {
         setContent {
             PdfProductivityTheme {
                 Surface(
@@ -38,12 +50,18 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     AppNavGraph(
-                        initialUri = initialUri,
+                        pendingUri = pendingUri,
                         onFinish = { finish() }
                     )
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pendingUri.value = extractPdfUri(intent)
     }
 
     /** Returns the PDF's Uri if this activity was launched via "Open with" / VIEW. */
