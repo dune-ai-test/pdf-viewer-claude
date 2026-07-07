@@ -1,6 +1,11 @@
 package com.productivity.pdf.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -21,6 +26,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import com.github.barteksc.pdfviewer.PDFView
 import com.productivity.pdf.data.RecentPdfsStore
 import com.productivity.pdf.model.RecentPdf
@@ -37,24 +43,25 @@ import kotlinx.coroutines.withContext
  *  - normal PDFs: opens immediately
  *  - password-protected PDFs: catches the load error, prompts for a password,
  *    retries with it, and shows "incorrect password" if it fails again.
+ *  - legacy `file://` sources on Android ≤9 (API 28): requests
+ *    READ_EXTERNAL_STORAGE at runtime before attempting to read (declaring it
+ *    in the manifest alone never triggers the OS prompt — that only works for
+ *    "normal" permissions, not dangerous ones like storage).
  *
- * Two things this deliberately does NOT do, both fixes for real bugs:
+ * Two other things this deliberately does NOT do, both fixes for real bugs:
  *
  * 1. It never calls `pdfView.fromUri(uri)` directly. The library's own Uri
  *    reader didn't reliably carry over the SAF read grant we got from the file
  *    picker ("Permission Denial ... requires ACTION_OPEN_DOCUMENT" even right
  *    after picking), and it can't read `file://` Uris at all (ContentResolver
  *    only routes `content://` — a raw `file://` surfaces as "No content
- *    provider"). Instead we read the bytes ourselves (a method that reliably
- *    works for both schemes — see `PdfFileUtils.copyToCache`) into our cache
- *    dir, and hand Pdfium a plain `java.io.File` via `.fromFile()`.
+ *    provider"). Instead we read the bytes ourselves into our cache dir (see
+ *    `PdfFileUtils.copyToCache`), and hand Pdfium a plain `java.io.File` via
+ *    `.fromFile()`.
  *
- * 2. The `.load()` call never lives inside `AndroidView`'s `update` block.
- *    `update` re-runs on every recomposition, and since loading flips
- *    `isLoading` (read by this same composable), that previously created a
- *    reload loop that cancelled every in-flight render. It's now driven by
- *    two separate `LaunchedEffect`s keyed only on the values that should
- *    actually trigger a (re)load.
+ * 2. The `.load()` call never lives inside `AndroidView`'s `update` block —
+ *    it's driven by `LaunchedEffect`s keyed only on the values that should
+ *    actually trigger a (re)load, avoiding an earlier reload-loop bug.
  */
 @Composable
 fun PdfViewerScreen(
@@ -63,6 +70,29 @@ fun PdfViewerScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+
+    // Only file:// sources on API <= 28 (Android 9 and below) need the legacy
+    // runtime permission at all — content:// (SAF / most "Open with" senders)
+    // and every API 29+ device never touch this path.
+    val needsLegacyStoragePermission = uri.scheme == "file" && Build.VERSION.SDK_INT <= Build.VERSION_CODES.P
+
+    var hasStoragePermission by remember {
+        mutableStateOf(
+            !needsLegacyStoragePermission ||
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.READ_EXTERNAL_STORAGE
+                ) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    var permissionDenied by remember { mutableStateOf(false) }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasStoragePermission = granted
+        permissionDenied = !granted
+    }
 
     var cachedFile by remember { mutableStateOf<File?>(null) }
     var copyFailed by remember { mutableStateOf(false) }
@@ -108,7 +138,10 @@ fun PdfViewerScreen(
                 ) {
                     Text(
                         text = when {
-                            copyFailed -> "Couldn't read this PDF.\nIt may have been moved, deleted, or the app that shared it didn't grant access."
+                            permissionDenied ->
+                                "Storage permission is needed to open this file.\nGrant it in Settings > Apps > PDF Productivity > Permissions, then try again."
+                            copyFailed ->
+                                "Couldn't read this PDF.\nIt may have been moved, deleted, or the app that shared it didn't grant access."
                             errorMessage != null -> "Couldn't open this PDF.\n$errorMessage"
                             else -> "Couldn't open this PDF."
                         },
@@ -129,9 +162,17 @@ fun PdfViewerScreen(
         }
     }
 
-    // Step 1: read the source Uri's bytes into our own cache file exactly once
-    // per Uri (not repeated on password retries).
-    LaunchedEffect(uri) {
+    // Step 1: for legacy file:// sources, make sure we actually have the
+    // runtime permission before trying to read anything.
+    LaunchedEffect(uri, hasStoragePermission) {
+        if (needsLegacyStoragePermission && !hasStoragePermission) {
+            isLoading = true
+            permissionLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
+            return@LaunchedEffect
+        }
+
+        // Step 2: read the source Uri's bytes into our own cache file exactly
+        // once per Uri (not repeated on password retries).
         isLoading = true
         errorMessage = null
         copyFailed = false
@@ -144,7 +185,7 @@ fun PdfViewerScreen(
         }
     }
 
-    // Step 2: load the local file into Pdfium. Re-runs when the cached file
+    // Step 3: load the local file into Pdfium. Re-runs when the cached file
     // becomes available, or when the user submits a (new) password.
     LaunchedEffect(cachedFile, password, loadAttempt) {
         val file = cachedFile ?: return@LaunchedEffect
