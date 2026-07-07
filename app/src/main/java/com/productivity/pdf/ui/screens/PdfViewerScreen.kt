@@ -15,6 +15,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -29,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.github.barteksc.pdfviewer.PDFView
+import com.github.barteksc.pdfviewer.scroll.DefaultScrollHandle
 import com.productivity.pdf.data.RecentPdfsStore
 import com.productivity.pdf.model.RecentPdf
 import com.productivity.pdf.ui.components.AnnotationToolbar
@@ -46,6 +48,11 @@ import kotlinx.coroutines.withContext
  * anywhere on a page toggles the top title bar and the bottom annotation
  * toolbar back on/off (like most PDF/photo viewers). Hardware/gesture back
  * always works via `BackHandler`, regardless of whether the bars are showing.
+ * Pinch-to-zoom is free between 0.5x and 6x (not clamped to the initial
+ * fit-width scale), and a "current/total" page scrubber appears on the right
+ * edge while scrolling. The PDF is copied to a disk cache file to open it
+ * (see `PdfFileUtils.copyToCache`), and that file is deleted automatically
+ * the moment this screen closes — so cache usage never grows unbounded.
  *
  * @param addToRecents true only when this file was opened via the Library's
  * own "+" button. Files opened via "Open with" from another app are viewed
@@ -103,6 +110,15 @@ fun PdfViewerScreen(
 
     val pdfViewHolder = remember { mutableStateOf<PDFView?>(null) }
 
+    // Deletes this PDF's disk-cache copy the moment this screen leaves
+    // composition — whether that's pressing back, or the nav graph swapping
+    // straight to a different PDF (see NavGraph's popUpTo/navigate on a new
+    // "Open with" intent). Keeps disk usage at "only the PDF(s) currently
+    // open", not "every PDF ever opened".
+    DisposableEffect(Unit) {
+        onDispose { cachedFile?.delete() }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -111,7 +127,17 @@ fun PdfViewerScreen(
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
-                PDFView(ctx, null).also { pdfViewHolder.value = it }
+                PDFView(ctx, null).also { view ->
+                    // Default min zoom (1x) equals the initial "fit width"
+                    // scale, so there was nothing to pinch OUT to — this is
+                    // what made zoom feel "stuck". Widening the range lets you
+                    // freely zoom both out (see more of the page, e.g. useful
+                    // for wide/landscape pages) and further in than before.
+                    view.minZoom = 0.5f
+                    view.midZoom = 2.5f
+                    view.maxZoom = 6f
+                    pdfViewHolder.value = view
+                }
             }
         )
 
@@ -198,6 +224,10 @@ fun PdfViewerScreen(
             .defaultPage(0)
             .password(password)
             .spacing(8)
+            // The standard "current page / total pages" indicator + drag
+            // scrubber shown on the right edge while scrolling — the same
+            // control most PDF readers (Drive, Adobe, etc.) use.
+            .scrollHandle(DefaultScrollHandle(context))
             .onTap {
                 chromeVisible = !chromeVisible
                 true

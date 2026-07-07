@@ -13,6 +13,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import com.productivity.pdf.navigation.AppNavGraph
 import com.productivity.pdf.ui.theme.PdfProductivityTheme
+import com.productivity.pdf.util.PdfFileUtils
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -42,6 +46,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         pendingUri.value = extractPdfUri(intent)
+
+        // Safety net: normal open/close cycles delete their own cache file
+        // (see PdfViewerScreen's DisposableEffect); this only catches the case
+        // where that didn't run, e.g. the app was force-killed mid-view.
+        MainScope().launch(Dispatchers.IO) {
+            PdfFileUtils.clearCachedPdfs(applicationContext)
+        }
 
         setContent {
             PdfProductivityTheme {
