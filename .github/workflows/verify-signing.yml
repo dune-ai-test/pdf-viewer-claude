@@ -1,0 +1,79 @@
+name: Verify Signing Config
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+    branches: [ "master", "main" ]
+  workflow_dispatch:
+
+jobs:
+  verify-signing:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate secrets are configured
+        run: |
+          echo "Checking signing secrets..."
+          MISSING=0
+
+          if [ -z "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
+            echo "❌ ANDROID_KEYSTORE_BASE64 is not set"
+            MISSING=1
+          else
+            echo "✅ ANDROID_KEYSTORE_BASE64 is set"
+          fi
+
+          if [ -z "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" ]; then
+            echo "❌ ANDROID_KEYSTORE_PASSWORD is not set"
+            MISSING=1
+          else
+            echo "✅ ANDROID_KEYSTORE_PASSWORD is set"
+          fi
+
+          if [ -z "${{ secrets.ANDROID_KEY_ALIAS }}" ]; then
+            echo "❌ ANDROID_KEY_ALIAS is not set"
+            MISSING=1
+          else
+            echo "✅ ANDROID_KEY_ALIAS is set"
+          fi
+
+          if [ -z "${{ secrets.ANDROID_KEY_PASSWORD }}" ]; then
+            echo "❌ ANDROID_KEY_PASSWORD is not set"
+            MISSING=1
+          else
+            echo "✅ ANDROID_KEY_PASSWORD is set"
+          fi
+
+          if [ $MISSING -eq 1 ]; then
+            echo ""
+            echo "⚠️  Some secrets are missing. Add them in:"
+            echo "    Repository → Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ All signing secrets are configured!"
+
+      - name: Decode and verify keystore
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > /tmp/release.keystore
+          echo "Keystore decoded successfully"
+          echo ""
+          echo "Verifying keystore and key..."
+          keytool -list -keystore /tmp/release.keystore \
+            -storepass "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" \
+            -alias "${{ secrets.ANDROID_KEY_ALIAS }}"
+
+          if [ $? -eq 0 ]; then
+            echo ""
+            echo "✅ Keystore and key verified successfully!"
+          else
+            echo ""
+            echo "❌ Failed to verify keystore - wrong password or alias?"
+            exit 1
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: rm -f /tmp/release.keystore
