@@ -9,7 +9,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -19,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,13 +54,13 @@ import kotlinx.coroutines.withContext
  * toolbar back on/off (like most PDF/photo viewers). Hardware/gesture back
  * always works via `BackHandler`, regardless of whether the bars are showing.
  * Pinch-to-zoom is free between 0.5x and 6x (not clamped to the initial
- * fit-width scale). A slim "current/total" page pill sits on the right edge
- * (a custom, narrow indicator — not the library's much wider default scroll
- * handle). Page background color and night mode come from `PdfSettingsStore`
- * (set on the Settings screen, persisted across restarts). The PDF is copied
- * to a disk cache file to open it (see `PdfFileUtils.copyToCache`), and that
- * file is deleted automatically the moment this screen closes — so cache
- * usage never grows unbounded.
+ * fit-width scale). A slim "current/total" page pill slides down the right
+ * edge as you scroll — like a scrollbar thumb — instead of the library's much
+ * wider, fixed default scroll handle. Page background color and night mode
+ * come from `PdfSettingsStore` (set on the Settings screen, persisted across
+ * restarts). The PDF is copied to a disk cache file to open it (see
+ * `PdfFileUtils.copyToCache`), and that file is deleted automatically the
+ * moment this screen closes — so cache usage never grows unbounded.
  *
  * @param addToRecents true only when this file was opened via the Library's
  * own "+" button. Files opened via "Open with" from another app are viewed
@@ -109,6 +112,10 @@ fun PdfViewerScreen(
     var isLoading by remember { mutableStateOf(true) }
     var loadedPageCount by remember { mutableIntStateOf(0) }
     var currentPageIndex by remember { mutableIntStateOf(0) }
+    // 0f..1f progress through the document, used to slide the page pill down
+    // the right edge like a scrollbar thumb (updated continuously via
+    // onPageScroll, not just when the page number itself changes).
+    var scrollFraction by remember { mutableFloatStateOf(0f) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     // Bumped when the user submits a password, to guarantee the load effect
     // re-fires even if they retype the exact same (still-wrong) password.
@@ -125,7 +132,7 @@ fun PdfViewerScreen(
         onDispose { cachedFile?.delete() }
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surfaceContainerLow)
@@ -200,13 +207,20 @@ fun PdfViewerScreen(
             }
         }
 
-        // Slim "current/total" page pill, e.g. "3/9" — narrow by design
-        // (just the text, small padding) unlike the library's own much wider
-        // default scroll handle. Shown whenever a document is loaded.
+        // Slim "current/total" page pill, e.g. "3/9" — narrow by design (just
+        // the text, small padding) unlike the library's own much wider
+        // default scroll handle. Its vertical position tracks scroll
+        // progress (like a scrollbar thumb), instead of sitting fixed —
+        // matching how the built-in handle used to behave.
         if (!isLoading && loadedPageCount > 0) {
+            val pillTravelMargin = 32.dp // reserves space so the pill never clips off top/bottom
+            val trackHeight = (maxHeight - pillTravelMargin).coerceAtLeast(0.dp)
+            val offsetY = trackHeight * scrollFraction.coerceIn(0f, 1f)
+
             Box(
                 modifier = Modifier
-                    .align(Alignment.CenterEnd)
+                    .align(Alignment.TopEnd)
+                    .offset(y = offsetY)
                     .padding(end = 8.dp)
                     .clip(RoundedCornerShape(percent = 50))
                     .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f))
@@ -264,6 +278,16 @@ fun PdfViewerScreen(
             .spacing(8)
             .nightMode(nightMode)
             .onPageChange { page, _ -> currentPageIndex = page }
+            .onPageScroll { page, positionOffset ->
+                // Fires continuously while scrolling (not just at page
+                // boundaries), so the pill's position keeps up smoothly.
+                currentPageIndex = page
+                scrollFraction = if (loadedPageCount > 0) {
+                    (page + positionOffset) / loadedPageCount
+                } else {
+                    0f
+                }
+            }
             .onTap {
                 chromeVisible = !chromeVisible
                 true
