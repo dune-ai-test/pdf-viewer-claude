@@ -8,6 +8,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
@@ -29,7 +30,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -44,6 +47,7 @@ import com.productivity.pdf.ui.components.PasswordPromptDialog
 import com.productivity.pdf.ui.components.TranslucentTopBar
 import com.productivity.pdf.util.PdfFileUtils
 import java.io.File
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -56,9 +60,9 @@ import kotlinx.coroutines.withContext
  * always works via `BackHandler`, regardless of whether the bars are showing.
  * Pinch-to-zoom is free between 0.5x and 6x (not clamped to the initial
  * fit-width scale). A slim "current/total" page pill slides down the right
- * edge as you scroll — like a scrollbar thumb — instead of the library's much
- * wider, fixed default scroll handle. Page background color and night mode
- * come from `PdfSettingsStore` (set on the Settings screen, persisted across
+ * edge as you scroll — like a scrollbar thumb — and can be dragged up/down to
+ * jump to any page, instead of the library's much wider, fixed default scroll
+ * handle. Page background color and night mode come from `PdfSettingsStore` (set on the Settings screen, persisted across
  * restarts). The PDF is copied to a disk cache file to open it (see
  * `PdfFileUtils.copyToCache`), and that file is deleted automatically the
  * moment this screen closes — so cache usage never grows unbounded.
@@ -117,6 +121,10 @@ fun PdfViewerScreen(
     // the right edge like a scrollbar thumb (updated continuously via
     // onPageScroll, not just when the page number itself changes).
     var scrollFraction by remember { mutableFloatStateOf(0f) }
+    // True while the user is actively dragging the page pill, so incoming
+    // onPageScroll updates (from the jumpTo calls the drag itself triggers)
+    // don't fight with the finger's own position.
+    var isDraggingPill by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     // Bumped when the user submits a password, to guarantee the load effect
     // re-fires even if they retype the exact same (still-wrong) password.
@@ -211,18 +219,50 @@ fun PdfViewerScreen(
         // Slim "current/total" page pill, e.g. "3/9" — narrow by design (just
         // the text, small padding) unlike the library's own much wider
         // default scroll handle. Its vertical position tracks scroll
-        // progress (like a scrollbar thumb), instead of sitting fixed —
-        // matching how the built-in handle used to behave.
+        // progress (like a scrollbar thumb). Drag it up/down to jump to any
+        // page — the feature the old default handle had, restored here since
+        // the slim replacement pill didn't carry it over.
         if (!isLoading && loadedPageCount > 0) {
+            val density = LocalDensity.current
             val pillTravelMargin = 32.dp // reserves space so the pill never clips off top/bottom
             val trackHeight = (maxHeight - pillTravelMargin).coerceAtLeast(0.dp)
-            val offsetY = trackHeight * scrollFraction.coerceIn(0f, 1f)
+            val trackHeightPx = with(density) { trackHeight.toPx() }
+
+            // While dragging, this drives the pill's position directly from
+            // the finger; while not dragging, it's kept in sync with the
+            // PDF's own scroll position (scrollFraction) below.
+            var dragOffsetPx by remember { mutableFloatStateOf(trackHeightPx * scrollFraction) }
+
+            LaunchedEffect(scrollFraction, trackHeightPx) {
+                if (!isDraggingPill) {
+                    dragOffsetPx = trackHeightPx * scrollFraction.coerceIn(0f, 1f)
+                }
+            }
+
+            val offsetY = with(density) { dragOffsetPx.coerceIn(0f, trackHeightPx).toDp() }
 
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .offset(y = offsetY)
                     .padding(end = 8.dp)
+                    .pointerInput(trackHeightPx, loadedPageCount) {
+                        detectVerticalDragGestures(
+                            onDragStart = { isDraggingPill = true },
+                            onDragEnd = { isDraggingPill = false },
+                            onDragCancel = { isDraggingPill = false }
+                        ) { change, dragAmount ->
+                            change.consume()
+                            dragOffsetPx = (dragOffsetPx + dragAmount).coerceIn(0f, trackHeightPx)
+                            val fraction = if (trackHeightPx > 0f) dragOffsetPx / trackHeightPx else 0f
+                            val targetPage = (fraction * (loadedPageCount - 1))
+                                .roundToInt()
+                                .coerceIn(0, loadedPageCount - 1)
+                            currentPageIndex = targetPage
+                            scrollFraction = fraction
+                            pdfViewHolder.value?.jumpTo(targetPage, false)
+                        }
+                    }
                     .clip(RoundedCornerShape(percent = 50))
                     .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f))
                     .padding(horizontal = 10.dp, vertical = 4.dp)
