@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.github.barteksc.pdfviewer.PDFView
+import com.github.barteksc.pdfviewer.util.FitPolicy
 import com.productivity.pdf.data.PdfSettingsStore
 import com.productivity.pdf.data.RecentPdfsStore
 import com.productivity.pdf.model.RecentPdf
@@ -277,6 +278,14 @@ fun PdfViewerScreen(
             .password(password)
             .spacing(8)
             .nightMode(nightMode)
+            // Explicit width-fit + fitEachPage: without these, tall/long pages
+            // can drift horizontally while scrolling once zoomed (each page's
+            // fit gets recalculated inconsistently). This is a known rough
+            // edge in this library with very tall pages — flagging in case it
+            // doesn't fully resolve it on your device, since it can't be
+            // verified without running the actual build.
+            .pageFitPolicy(FitPolicy.WIDTH)
+            .fitEachPage(true)
             .onPageChange { page, _ -> currentPageIndex = page }
             .onPageScroll { page, positionOffset ->
                 // Fires continuously while scrolling (not just at page
