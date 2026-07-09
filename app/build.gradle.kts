@@ -33,7 +33,7 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
             val signingConfig = signingConfigs.findByName("release")
             if (signingConfig?.storeFile?.exists() == true) {
                 this.signingConfig = signingConfig
